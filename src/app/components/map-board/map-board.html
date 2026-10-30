@@ -1,0 +1,343 @@
+<div class="risk-board-container">
+  <!-- TOP HUD -->
+  <header class="hud-top">
+    <div class="brand-group">
+      <span class="badge-title">RISIK II</span>
+      <div class="turn-pill">
+        Turno <strong>#{{ gameState().turnNumber }}</strong>
+      </div>
+      <div class="phase-pill">
+        {{ getPhaseLabel(gameState().phase) }}
+      </div>
+      <div class="turn-pill">
+        Prossimo Tris: <strong>+{{ nextTradeBonus() }}</strong> armate
+      </div>
+    </div>
+
+    <!-- Strip Giocatori -->
+    <div class="players-strip">
+      @for (p of gameState().players; track p.id; let idx = $index) {
+        <div
+          class="player-chip"
+          [class.active]="idx === gameState().activePlayerIndex"
+          [class.eliminated]="p.isEliminated"
+          [style.border-color]="p.color"
+        >
+          <span class="color-dot" [style.background]="p.color"></span>
+          <span class="p-name">{{ p.isAi ? '🤖 ' : '' }}{{ p.name }}</span>
+          <span class="p-count">{{ getOwnedCount(p.id) }} terr.</span>
+          <span class="card-badge">🃏 {{ p.cards.length }}</span>
+        </div>
+      }
+    </div>
+
+    <div class="controls">
+      <button
+        class="btn-sm"
+        [class.active]="gameState().mapVariant === 'RISK_II_48'"
+        (click)="restartGame('RISK_II_48')"
+      >
+        Nuova 48
+      </button>
+      <button
+        class="btn-sm"
+        [class.active]="gameState().mapVariant === 'CLASSIC_42'"
+        (click)="restartGame('CLASSIC_42')"
+      >
+        Nuova 42
+      </button>
+    </div>
+  </header>
+
+  <!-- MAPPA SVG -->
+  <div class="map-viewport">
+    <svg viewBox="0 0 1200 650" class="tactical-svg">
+      <defs>
+        <filter id="glow-target" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="5" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+
+      <g class="connections-layer">
+        @for (edge of edges(); track edge.key) {
+          <line
+            [attr.x1]="edge.x1"
+            [attr.y1]="edge.y1"
+            [attr.x2]="edge.x2"
+            [attr.y2]="edge.y2"
+            [class.highlighted]="edge.isHighlighted"
+            [class.wrap-around]="edge.isWrapAround"
+            class="route-line"
+          />
+        }
+      </g>
+
+      @if (sourceNode() && targetNode() && !isWrapAroundPair(sourceNode()!, targetNode()!)) {
+        <line
+          [attr.x1]="sourceNode()!.centroid.x"
+          [attr.y1]="sourceNode()!.centroid.y"
+          [attr.x2]="targetNode()!.centroid.x"
+          [attr.y2]="targetNode()!.centroid.y"
+          class="attack-vector-line"
+        />
+      }
+
+      <g class="territories-layer">
+        @for (t of graph().territoryList; track t.id) {
+          <g
+            class="territory-node"
+            [class.is-source]="sourceId() === t.id"
+            [class.is-target]="targetId() === t.id"
+            [class.is-valid-target]="isValidTargetForSource(t.id)"
+            [attr.transform]="'translate(' + t.centroid.x + ',' + t.centroid.y + ')'"
+            (click)="onTerritoryClick(t.id)"
+          >
+            <circle
+              r="25"
+              fill="none"
+              [attr.stroke]="graph().continents[t.continentId].color"
+              stroke-width="2.5"
+              stroke-opacity="0.65"
+            />
+
+            <circle
+              r="20"
+              class="node-circle"
+              [attr.fill]="getOwnerColor(t.id)"
+              [attr.filter]="isValidTargetForSource(t.id) ? 'url(#glow-target)' : null"
+            />
+
+            <text y="5" text-anchor="middle" class="army-count">
+              {{ getArmies(t.id) }}
+            </text>
+
+            <text y="37" text-anchor="middle" class="territory-label">
+              {{ t.name }}
+            </text>
+          </g>
+        }
+      </g>
+    </svg>
+
+    <!-- Barra Carte del Giocatore Umano -->
+    @if (!activePlayer().isAi && activePlayer().cards.length > 0) {
+      <div class="cards-tray">
+        <span class="tray-title">Le tue Carte ({{ activePlayer().cards.length }}):</span>
+        @for (c of activePlayer().cards; track c.id) {
+          <div class="card-mini">
+            <span class="card-symbol">{{ getSymbolIcon(c.symbol) }}</span>
+            <span class="card-name">
+              {{ c.territoryId ? graph().territories[c.territoryId]?.name : 'JOLLY' }}
+            </span>
+          </div>
+        }
+      </div>
+    }
+
+    @if (gateway.lastError(); as err) {
+      <div class="error-banner">{{ err }}</div>
+    }
+  </div>
+
+  <!-- HUD INFERIORE -->
+  <footer class="hud-bottom">
+    @if (gateway.isAiThinking()) {
+      <div class="phase-panel">
+        <h3>
+          🤖 <span class="dot" [style.background]="activePlayer().color"></span>
+          <strong>{{ activePlayer().name }}</strong> sta eseguendo le sue manovre tattiche...
+        </h3>
+        @if (gameState().lastCombat; as cmb) {
+          <div class="combat-log">
+            <span>
+              ⚔️ {{ graph().territories[cmb.fromId].name }} &rarr;
+              {{ graph().territories[cmb.toId].name }}
+            </span>
+            <span
+              >🎲 [{{ cmb.attackerRolls.join(',') }}] vs 🛡️ [{{
+                cmb.defenderRolls.join(',')
+              }}]</span
+            >
+          </div>
+        }
+      </div>
+    } @else {
+      <!-- 1. DEPLOY -->
+      @if (gameState().phase === 'DEPLOY') {
+        <div class="phase-panel">
+          <div class="panel-main">
+            <h3>
+              <span class="dot" [style.background]="activePlayer().color"></span>
+              {{ activePlayer().name }} — Rinforzi da piazzare:
+              <span class="highlight-number">{{ activePlayer().reinforcementsAvailable }}</span>
+            </h3>
+            @if (gameState().lastReinforcementBreakdown; as brk) {
+              <p class="formula-hint">
+                Regola Risk II: <strong>{{ brk.ownedTerritoriesCount }}</strong> territori +
+                <strong>{{ brk.largestConnectedEmpire }}</strong> impero connesso max &rarr; Base
+                <strong>+{{ brk.baseArmies }}</strong>
+                @for (c of brk.continentBonuses; track c.continentId) {
+                  <span class="continent-bonus-pill">{{ c.name }} +{{ c.bonus }}</span>
+                }
+              </p>
+            }
+          </div>
+          <div class="action-buttons">
+            @if (availableCardSet(); as cardSet) {
+              <button class="btn-blitz" (click)="tradeCards(cardSet)">
+                🃏 Gioca Tris (+{{ nextTradeBonus() }} armate)
+              </button>
+            }
+            <span class="step-label">Piazza:</span>
+            @for (qty of [1, 5, 10]; track qty) {
+              <button
+                class="btn-action"
+                [class.selected]="deployStep() === qty"
+                (click)="deployStep.set(qty)"
+              >
+                +{{ qty }}
+              </button>
+            }
+          </div>
+        </div>
+      }
+
+      <!-- 2. ATTACK -->
+      @if (gameState().phase === 'ATTACK') {
+        <div class="phase-panel">
+          <div class="panel-main">
+            <h3>
+              <span class="dot" [style.background]="activePlayer().color"></span>
+              Fase di Attacco (Difesa a 3 dadi) —
+              @if (!sourceNode()) {
+                <span>Seleziona un tuo territorio con almeno 2 armate</span>
+              } @else if (!targetNode()) {
+                <span
+                  >Da <strong>{{ sourceNode()!.name }}</strong> ({{ getArmies(sourceNode()!.id) }})
+                  &rarr; clicca un nemico confinante</span
+                >
+              } @else {
+                <span>
+                  <strong>{{ sourceNode()!.name }}</strong> ({{ getArmies(sourceNode()!.id) }}) ⚔️
+                  <strong>{{ targetNode()!.name }}</strong> ({{ getArmies(targetNode()!.id) }})
+                </span>
+              }
+            </h3>
+
+            @if (gameState().lastCombat; as cmb) {
+              <div class="combat-log">
+                <span
+                  >🎲 Attacco: <strong>[{{ cmb.attackerRolls.join(', ') }}]</strong></span
+                >
+                <span
+                  >🛡️ Difesa: <strong>[{{ cmb.defenderRolls.join(', ') }}]</strong></span
+                >
+                <span>
+                  Perdite: Att -{{ cmb.attackerLosses }} / Dif -{{ cmb.defenderLosses }}
+                  @if (cmb.conquered) {
+                    <strong class="conquered-tag">✓ CONQUISTATO!</strong>
+                  }
+                </span>
+              </div>
+            }
+          </div>
+
+          <div class="action-buttons">
+            @if (sourceNode() && targetNode()) {
+              <button class="btn-combat" (click)="executeAttack('SINGLE', 3)">🎲 Tira Dadi</button>
+              <button class="btn-blitz" (click)="executeAttack('BLITZ')">⚡ BLITZ</button>
+              <button class="btn-secondary" (click)="clearSelection()">Annulla</button>
+            }
+            <button class="btn-next-phase" (click)="endAttackPhase()">Fortifica &rarr;</button>
+            <button class="btn-end-turn" (click)="endTurn()">Fine Turno ⏭</button>
+          </div>
+        </div>
+      }
+
+      <!-- 3. OCCUPY -->
+      @if (gameState().phase === 'OCCUPY' && gameState().pendingOccupation; as occ) {
+        <div class="phase-panel">
+          <div class="panel-main">
+            <h3>
+              🎖️ Territorio Conquistato! Sposta truppe extra in
+              <strong>{{ graph().territories[occ.toId].name }}</strong>
+            </h3>
+            <p class="formula-hint">
+              Puoi spostare fino a <strong>{{ occ.maxArmies }}</strong> armate aggiuntive da
+              {{ graph().territories[occ.fromId].name }}.
+            </p>
+          </div>
+          <div class="action-buttons">
+            <button class="btn-action" (click)="confirmOccupation(0)">Lascia così (+0)</button>
+            @if (occ.maxArmies >= 1) {
+              <button class="btn-action" (click)="confirmOccupation(1)">+1</button>
+            }
+            @if (occ.maxArmies >= 2) {
+              <button class="btn-action" (click)="confirmOccupation(Math.floor(occ.maxArmies / 2))">
+                Metà (+{{ Math.floor(occ.maxArmies / 2) }})
+              </button>
+            }
+            <button class="btn-blitz" (click)="confirmOccupation(occ.maxArmies)">
+              Sposta Tutte (+{{ occ.maxArmies }})
+            </button>
+          </div>
+        </div>
+      }
+
+      <!-- 4. FORTIFY -->
+      @if (gameState().phase === 'FORTIFY') {
+        <div class="phase-panel">
+          <div class="panel-main">
+            <h3>
+              🛡️ Spostamento Strategico —
+              @if (!sourceNode()) {
+                <span>Seleziona un tuo territorio da cui spostare armate (o termina il turno)</span>
+              } @else if (!targetNode()) {
+                <span
+                  >Da <strong>{{ sourceNode()!.name }}</strong> &rarr; clicca un tuo territorio
+                  confinante</span
+                >
+              } @else {
+                <span>
+                  Sposta da <strong>{{ sourceNode()!.name }}</strong> a
+                  <strong>{{ targetNode()!.name }}</strong>
+                </span>
+              }
+            </h3>
+          </div>
+          <div class="action-buttons">
+            @if (sourceNode() && targetNode()) {
+              <button class="btn-action" (click)="executeFortify(1)">Sposta 1</button>
+              <button
+                class="btn-action"
+                (click)="
+                  executeFortify(Math.max(1, Math.floor((getArmies(sourceNode()!.id) - 1) / 2)))
+                "
+              >
+                Sposta Metà
+              </button>
+              <button class="btn-combat" (click)="executeFortify(getArmies(sourceNode()!.id) - 1)">
+                Sposta Tutte ({{ getArmies(sourceNode()!.id) - 1 }})
+              </button>
+            }
+            <button class="btn-end-turn" (click)="endTurn()">Termina Turno ⏭</button>
+          </div>
+        </div>
+      }
+
+      <!-- 5. GAME OVER -->
+      @if (gameState().phase === 'GAME_OVER') {
+        <div class="phase-panel">
+          <h3>🏆 VITTORIA TOTALE! Il mondo è stato conquistato!</h3>
+          <button class="btn-blitz" (click)="restartGame(gameState().mapVariant)">
+            Gioca una Nuova Partita
+          </button>
+        </div>
+      }
+    }
+  </footer>
+</div>
