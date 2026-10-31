@@ -7,7 +7,7 @@ export type CardSymbol = 'INFANTRY' | 'CAVALRY' | 'ARTILLERY' | 'WILD';
 
 export interface TerritoryCard {
   id: string;
-  territoryId: TerritoryId | null; // null per le carte Jolly (WILD)
+  territoryId: TerritoryId | null;
   symbol: CardSymbol;
 }
 
@@ -41,13 +41,25 @@ export interface PendingOccupation {
   maxArmies: number;
 }
 
+export interface DieDuelResult {
+  attackerRoll: number;
+  defenderRoll: number;
+  attackerWon: boolean;
+}
+
 export interface CombatReport {
+  timestamp: number;
   fromId: TerritoryId;
   toId: TerritoryId;
+  attackerPlayerId: string;
+  defenderPlayerId: string;
   attackerRolls: number[];
   defenderRolls: number[];
+  diceDuels: DieDuelResult[];
   attackerLosses: number;
   defenderLosses: number;
+  attackerRemainingArmies: number;
+  defenderRemainingArmies: number;
   conquered: boolean;
   roundsFought: number;
 }
@@ -69,6 +81,10 @@ export interface FullGameState {
   phase: TurnPhase;
   players: PlayerState[];
   territories: Record<TerritoryId, TerritoryState>;
+  /** Traccia quante armate sono state schierate su ogni territorio nel turno corrente */
+  deployedThisTurn: Partial<Record<TerritoryId, number>>;
+  /** Territorio di origine bloccato una volta iniziato lo spostamento tattico multiplo */
+  fortifySourceId: TerritoryId | null;
   deck: TerritoryCard[];
   discardPile: TerritoryCard[];
   cardTradesCount: number;

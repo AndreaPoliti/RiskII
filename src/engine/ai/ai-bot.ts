@@ -2,15 +2,13 @@
 import { MapGraph, TerritoryId } from '@engine/map/map.models';
 import { AiGeneralId, GameCommand, PlayerViewState } from '@engine/models/game.models';
 import { findValidCardSetInHand } from '@engine/rules/cards.helper';
+import { getTerritoryDeployQuota } from '@engine/rules/reinforcements.helper';
 
 export interface AiPersonalityProfile {
   id: AiGeneralId;
   title: string;
-  /** Rapporto minimo (mieArmate / armateNemiche) per lanciare un attacco */
   minAttackRatio: number;
-  /** Differenza minima di armate per attaccare anche su piccoli presidi */
   minArmyAdvantage: number;
-  /** Peso extra assegnato ai territori dello stesso continente per chiudere i bonus */
   continentFocusBonus: number;
 }
 
@@ -45,10 +43,6 @@ export const AI_GENERALS: Record<AiGeneralId, AiPersonalityProfile> = {
   },
 };
 
-/**
- * Funzione pura che analizza lo stato corrente e restituisce il prossimo GameCommand
- * per il giocatore IA attivo.
- */
 export function computeNextAiCommand(state: PlayerViewState, graph: MapGraph): GameCommand {
   const aiPlayer = state.players[state.activePlayerIndex];
   const profile = AI_GENERALS[aiPlayer.aiGeneralId ?? 'MARLBOROUGH'];
@@ -57,7 +51,7 @@ export function computeNextAiCommand(state: PlayerViewState, graph: MapGraph): G
     (t) => state.territories[t.id].ownerId === aiPlayer.id,
   );
 
-  // ================= 1. FASE DEPLOY (Carte + Rinforzi) =================
+  // ================= 1. FASE DEPLOY (Con limite 1 + confinanti controllati) =================
   if (state.phase === 'DEPLOY') {
     const validSet = findValidCardSetInHand(aiPlayer.cards);
     if (validSet) {
@@ -68,30 +62,45 @@ export function computeNextAiCommand(state: PlayerViewState, graph: MapGraph): G
       };
     }
 
-    // Trova il territorio di confine più strategico su cui piazzare rinforzi
-    let bestTargetId: TerritoryId = myTerritories[0].id;
+    // Filtra solo i territori che hanno ancora quota disponibile in questo turno
+    const eligibleTerritories = myTerritories
+      .map((node) => ({
+        node,
+        quota: getTerritoryDeployQuota(
+          graph,
+          state.territories,
+          state.deployedThisTurn,
+          node.id,
+          aiPlayer.id,
+          aiPlayer.reinforcementsAvailable,
+        ),
+      }))
+      .filter((item) => item.quota.remainingAllowed > 0);
+
+    let bestTargetId: TerritoryId = eligibleTerritories[0]?.node.id ?? myTerritories[0].id;
+    let maxAllowedOnBest = eligibleTerritories[0]?.quota.remainingAllowed ?? 1;
     let bestScore = -Infinity;
 
-    for (const node of myTerritories) {
+    for (const { node, quota } of eligibleTerritories) {
       const enemyNeighbors = node.neighbors.filter(
         (nId) => state.territories[nId].ownerId !== aiPlayer.id,
       );
-      if (enemyNeighbors.length === 0) continue; // Ignora territori interni sicuri
 
-      // Calcola quanto siamo vicini a conquistare l'intero continente
       const continentNodes = graph.territoryList.filter((t) => t.continentId === node.continentId);
       const ownedInContinent = continentNodes.filter(
         (t) => state.territories[t.id].ownerId === aiPlayer.id,
       ).length;
       const continentCompletionRatio = ownedInContinent / continentNodes.length;
 
-      // Preferisci confini dove c'è un nemico vulnerabile o un continente quasi completo
-      const weakestEnemyArmies = Math.min(
-        ...enemyNeighbors.map((nId) => state.territories[nId].armies),
-      );
+      const weakestEnemyArmies =
+        enemyNeighbors.length > 0
+          ? Math.min(...enemyNeighbors.map((nId) => state.territories[nId].armies))
+          : 50;
       const myArmies = state.territories[node.id].armies;
 
+      const frontlineBonus = enemyNeighbors.length > 0 ? 25 : 0;
       const score =
+        frontlineBonus +
         continentCompletionRatio * profile.continentFocusBonus +
         (myArmies - weakestEnemyArmies) * 2 +
         enemyNeighbors.length;
@@ -99,10 +108,12 @@ export function computeNextAiCommand(state: PlayerViewState, graph: MapGraph): G
       if (score > bestScore) {
         bestScore = score;
         bestTargetId = node.id;
+        maxAllowedOnBest = quota.remainingAllowed;
       }
     }
 
-    const deployAmount = Math.min(3, aiPlayer.reinforcementsAvailable);
+    const deployAmount = Math.max(1, Math.min(maxAllowedOnBest, aiPlayer.reinforcementsAvailable));
+
     return {
       type: 'DEPLOY_ARMIES',
       playerId: aiPlayer.id,
@@ -111,15 +122,14 @@ export function computeNextAiCommand(state: PlayerViewState, graph: MapGraph): G
     };
   }
 
-  // ================= 2. FASE OCCUPY (Dopo una conquista) =================
+  // ================= 2. FASE OCCUPY =================
   if (state.phase === 'OCCUPY' && state.pendingOccupation) {
-    const { fromId, toId, maxArmies } = state.pendingOccupation;
+    const { fromId, maxArmies } = state.pendingOccupation;
     const fromNode = graph.territories[fromId];
     const fromStillOnFrontline = fromNode.neighbors.some(
       (nId) => state.territories[nId].ownerId !== aiPlayer.id,
     );
 
-    // Se il territorio di partenza non confina più con nemici, sposta tutte le armate al fronte!
     const armiesToMove = fromStillOnFrontline ? Math.floor(maxArmies * 0.7) : maxArmies;
 
     return {
@@ -175,8 +185,14 @@ export function computeNextAiCommand(state: PlayerViewState, graph: MapGraph): G
 
   // ================= 4. FASE FORTIFY =================
   if (state.phase === 'FORTIFY') {
-    // Cerca un territorio interno (zero nemici adiacenti) con >1 armate
-    // per spostarle verso un territorio confinante che si trova sul fronte
+    // Se l'IA ha già effettuato uno spostamento in questo turno, passa il turno
+    if (state.fortifySourceId) {
+      return {
+        type: 'END_TURN',
+        playerId: aiPlayer.id,
+      };
+    }
+
     for (const fromNode of myTerritories) {
       const available = state.territories[fromNode.id].armies - 1;
       if (available < 1) continue;

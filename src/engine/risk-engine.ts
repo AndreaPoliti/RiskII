@@ -4,6 +4,7 @@ import { MapGraph, MapVariant, TerritoryId } from './map/map.models';
 import {
   ActionResult,
   CombatReport,
+  DieDuelResult,
   FullGameState,
   GameCommand,
   PlayerConfig,
@@ -13,7 +14,10 @@ import {
   TerritoryState,
 } from './models/game.models';
 import { createShuffledDeck, getCardTradeBonus, isValidCardSet } from './rules/cards.helper';
-import { calculateRisk2Reinforcements } from './rules/reinforcements.helper';
+import {
+  calculateRisk2Reinforcements,
+  getTerritoryDeployQuota,
+} from './rules/reinforcements.helper';
 import { SeededRng } from './utils/prng';
 
 export class RiskEngine {
@@ -22,6 +26,8 @@ export class RiskEngine {
 
   constructor(initialState: FullGameState) {
     this.state = structuredClone(initialState);
+    this.state.deployedThisTurn ??= {};
+    this.state.fortifySourceId ??= null;
     this.graph = buildMapGraph(this.state.mapVariant);
   }
 
@@ -65,6 +71,7 @@ export class RiskEngine {
       remainingArmies.set(owner.id, (remainingArmies.get(owner.id) ?? 1) - 1);
     });
 
+    // Il piazzamento iniziale distribuisce le truppe senza il vincolo (1 + confinanti)
     for (const player of players) {
       const ownedIds = Object.values(territories)
         .filter((t) => t.ownerId === player.id)
@@ -93,6 +100,8 @@ export class RiskEngine {
       phase: 'DEPLOY',
       players,
       territories,
+      deployedThisTurn: {},
+      fortifySourceId: null,
       deck,
       discardPile: [],
       cardTradesCount: 0,
@@ -116,7 +125,6 @@ export class RiskEngine {
   public getPlayerView(viewerId?: string): PlayerViewState {
     const { rngState: _, deck, discardPile: __, ...view } = structuredClone(this.state);
 
-    // Se è specificato un viewerId (modalità Online P2P), maschera le carte degli avversari
     if (viewerId) {
       view.players = view.players.map((p) => {
         if (p.id === viewerId) return p;
@@ -195,14 +203,12 @@ export class RiskEngine {
     this.state.cardTradesCount += 1;
     player.reinforcementsAvailable += bonusArmies;
 
-    // Bonus territorio: +2 armate direttamente sui territori posseduti raffigurati sulle carte
     for (const card of tuple) {
       if (card.territoryId && this.state.territories[card.territoryId]?.ownerId === player.id) {
         this.state.territories[card.territoryId].armies += 2;
       }
     }
 
-    // Rimuovi le carte dalla mano e mettile negli scarti
     const idSet = new Set(cardIds);
     player.cards = player.cards.filter((c) => !idSet.has(c.id));
     this.state.discardPile.push(...tuple);
@@ -225,13 +231,32 @@ export class RiskEngine {
       return this.fail('Puoi piazzare rinforzi solo sui tuoi territori.');
     }
 
-    const count = Math.min(armies, player.reinforcementsAvailable);
-    if (count <= 0) {
-      return this.fail('Nessun rinforzo disponibile.');
+    const quota = getTerritoryDeployQuota(
+      this.graph,
+      this.state.territories,
+      this.state.deployedThisTurn,
+      territoryId,
+      player.id,
+      player.reinforcementsAvailable,
+    );
+
+    if (quota.remainingAllowed <= 0) {
+      return this.fail(
+        `Limite raggiunto per ${this.graph.territories[territoryId].name}: max ${quota.maxPerTurn} armate in questo turno (1 + ${quota.friendlyNeighborsCount} territori amici confinanti).`,
+      );
     }
+
+    const requested = Math.floor(armies);
+    if (requested <= 0) {
+      return this.fail('Inserisci un numero di armate maggiore di zero.');
+    }
+
+    const count = Math.min(requested, quota.remainingAllowed, player.reinforcementsAvailable);
 
     territory.armies += count;
     player.reinforcementsAvailable -= count;
+    this.state.deployedThisTurn[territoryId] =
+      (this.state.deployedThisTurn[territoryId] ?? 0) + count;
 
     if (player.reinforcementsAvailable === 0) {
       this.state.phase = 'ATTACK';
@@ -264,11 +289,13 @@ export class RiskEngine {
       return this.fail('Servono almeno 2 armate per attaccare.');
     }
 
+    const defenderPlayerId = to.ownerId;
     const rng = new SeededRng(this.state.rngState);
     let totalAttackerLosses = 0;
     let totalDefenderLosses = 0;
     let lastAttackerRolls: number[] = [];
     let lastDefenderRolls: number[] = [];
+    let lastDiceDuels: DieDuelResult[] = [];
     let roundsFought = 0;
     let lastUsedAttackerDice = 1;
 
@@ -279,7 +306,7 @@ export class RiskEngine {
           ? maxAttackerDice
           : (Math.min(requestedDice ?? maxAttackerDice, maxAttackerDice) as 1 | 2 | 3);
 
-      // Regola Risiko!: la difesa tira fino a 3 dadi se ha 3 o più armate nel territorio
+      // Difesa fino a 3 dadi se ha 3+ unità
       const dDice = Math.min(3, to.armies) as 1 | 2 | 3;
 
       lastUsedAttackerDice = aDice;
@@ -287,9 +314,17 @@ export class RiskEngine {
       lastAttackerRolls = Array.from({ length: aDice }, () => rng.rollDie(6)).sort((a, b) => b - a);
       lastDefenderRolls = Array.from({ length: dDice }, () => rng.rollDie(6)).sort((a, b) => b - a);
 
+      lastDiceDuels = [];
       const comparisons = Math.min(lastAttackerRolls.length, lastDefenderRolls.length);
       for (let i = 0; i < comparisons; i++) {
-        if (lastAttackerRolls[i] > lastDefenderRolls[i]) {
+        const attackerWon = lastAttackerRolls[i] > lastDefenderRolls[i];
+        lastDiceDuels.push({
+          attackerRoll: lastAttackerRolls[i],
+          defenderRoll: lastDefenderRolls[i],
+          attackerWon,
+        });
+
+        if (attackerWon) {
           to.armies -= 1;
           totalDefenderLosses += 1;
         } else {
@@ -312,7 +347,6 @@ export class RiskEngine {
     const conquered = to.armies === 0;
 
     if (conquered) {
-      const previousOwnerId = to.ownerId;
       to.ownerId = player.id;
       player.conqueredTerritoryThisTurn = true;
 
@@ -334,16 +368,22 @@ export class RiskEngine {
         };
       }
 
-      this.checkPlayerElimination(previousOwnerId, player);
+      this.checkPlayerElimination(defenderPlayerId, player);
     }
 
     const report: CombatReport = {
+      timestamp: Date.now(),
       fromId,
       toId,
+      attackerPlayerId: player.id,
+      defenderPlayerId,
       attackerRolls: lastAttackerRolls,
       defenderRolls: lastDefenderRolls,
+      diceDuels: lastDiceDuels,
       attackerLosses: totalAttackerLosses,
       defenderLosses: totalDefenderLosses,
+      attackerRemainingArmies: from.armies,
+      defenderRemainingArmies: to.armies,
       conquered,
       roundsFought,
     };
@@ -358,10 +398,15 @@ export class RiskEngine {
     }
 
     const { fromId, toId, maxArmies } = this.state.pendingOccupation;
-    const moveCount = Math.max(0, Math.min(additionalArmies, maxArmies));
+    const moveCount = Math.max(0, Math.min(Math.floor(additionalArmies), maxArmies));
 
     this.state.territories[fromId].armies -= moveCount;
     this.state.territories[toId].armies += moveCount;
+
+    if (this.state.lastCombat) {
+      this.state.lastCombat.attackerRemainingArmies = this.state.territories[fromId].armies;
+      this.state.lastCombat.defenderRemainingArmies = this.state.territories[toId].armies;
+    }
 
     this.state.pendingOccupation = null;
     if ((this.state.phase as string) !== 'GAME_OVER') {
@@ -376,12 +421,26 @@ export class RiskEngine {
       return this.fail('Puoi passare alla fortificazione solo dalla fase di Attacco.');
     }
     this.state.phase = 'FORTIFY';
+    this.state.fortifySourceId = null;
     return this.ok();
   }
 
+  /**
+   * Spostamento Tattico Risk II:
+   * Una volta scelto il territorio di origine (fromId), puoi trasferire armate
+   * verso PIÙ territori confinanti in tuo possesso nello stesso turno, purché
+   * rimanga almeno 1 armata nel territorio di origine.
+   */
   private handleFortify(fromId: TerritoryId, toId: TerritoryId, armies: number): ActionResult {
     if (this.state.phase !== 'FORTIFY') {
       return this.fail('Non sei nella fase di Spostamento Strategico.');
+    }
+
+    if (this.state.fortifySourceId && this.state.fortifySourceId !== fromId) {
+      const lockedName = this.graph.territories[this.state.fortifySourceId]?.name;
+      return this.fail(
+        `In questo turno hai già iniziato lo spostamento tattico da ${lockedName}. Puoi inviare altre truppe a più territori confinanti ma solo partendo da ${lockedName}.`,
+      );
     }
 
     const player = this.state.players[this.state.activePlayerIndex];
@@ -395,14 +454,22 @@ export class RiskEngine {
       return this.fail('I territori devono essere confinanti per lo spostamento.');
     }
     if (from.armies < 2) {
-      return this.fail('Deve rimanere almeno 1 armata nel territorio di partenza.');
+      return this.fail('Deve rimanere almeno 1 armata nel territorio di origine.');
     }
 
-    const count = Math.max(1, Math.min(armies, from.armies - 1));
+    const requested = Math.floor(armies);
+    if (requested <= 0) {
+      return this.fail('Seleziona almeno 1 armata da trasferire.');
+    }
+
+    const count = Math.min(requested, from.armies - 1);
     from.armies -= count;
     to.armies += count;
 
-    return this.handleEndTurn();
+    // Vincola il territorio di origine per eventuali ulteriori trasferimenti in questo turno
+    this.state.fortifySourceId = fromId;
+
+    return this.ok();
   }
 
   private handleEndTurn(): ActionResult {
@@ -412,7 +479,6 @@ export class RiskEngine {
 
     const currentPlayer = this.state.players[this.state.activePlayerIndex];
 
-    // Se il giocatore ha conquistato almeno 1 territorio in questo turno, pesca 1 carta
     if (currentPlayer.conqueredTerritoryThisTurn) {
       this.drawCardForPlayer(currentPlayer);
     }
@@ -438,6 +504,8 @@ export class RiskEngine {
     );
     nextPlayer.reinforcementsAvailable = breakdown.totalArmies;
     this.state.lastReinforcementBreakdown = breakdown;
+    this.state.deployedThisTurn = {};
+    this.state.fortifySourceId = null;
     this.state.lastCombat = null;
     this.state.phase = 'DEPLOY';
 
@@ -467,7 +535,6 @@ export class RiskEngine {
       const eliminated = this.state.players.find((p) => p.id === defeatedPlayerId);
       if (eliminated && !eliminated.isEliminated) {
         eliminated.isEliminated = true;
-        // Chi elimina un avversario cattura tutte le sue carte territorio!
         conqueror.cards.push(...eliminated.cards);
         eliminated.cards = [];
       }

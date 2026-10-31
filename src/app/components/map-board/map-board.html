@@ -10,7 +10,7 @@
         {{ getPhaseLabel(gameState().phase) }}
       </div>
       <div class="turn-pill">
-        Prossimo Tris: <strong>+{{ nextTradeBonus() }}</strong> armate
+        Prossimo Tris: <strong>+{{ nextTradeBonus() }}</strong>
       </div>
     </div>
 
@@ -102,6 +102,28 @@
               {{ getArmies(t.id) }}
             </text>
 
+            <!-- Badge Quota Rinforzi piazzati nel turno corrente (Fase DEPLOY) -->
+            @if (
+              gameState().phase === 'DEPLOY' && getTerritoryOwnerId(t.id) === activePlayer().id
+            ) {
+              @let q = getQuotaForTerritory(t.id);
+              <g transform="translate(18, -18)">
+                <rect
+                  x="-18"
+                  y="-9"
+                  width="36"
+                  height="15"
+                  rx="4"
+                  [attr.fill]="q.remainingAllowed === 0 ? '#7f1d1d' : '#0f172a'"
+                  stroke="#475569"
+                  stroke-width="1"
+                />
+                <text y="2" text-anchor="middle" class="quota-pill-text">
+                  {{ q.alreadyDeployed }}/{{ q.maxPerTurn }}
+                </text>
+              </g>
+            }
+
             <text y="37" text-anchor="middle" class="territory-label">
               {{ t.name }}
             </text>
@@ -110,7 +132,7 @@
       </g>
     </svg>
 
-    <!-- Barra Carte del Giocatore Umano -->
+    <!-- Barra Carte del Giocatore Locale -->
     @if (!gateway.myViewerPlayer().isAi && gateway.myViewerPlayer().cards.length > 0) {
       <div class="cards-tray">
         <span class="tray-title">
@@ -126,6 +148,162 @@
             </span>
           </div>
         }
+      </div>
+    }
+
+    <!-- POPUP CENTRALE RISULTATO DADI E COMBATTIMENTO -->
+    @if (isCombatModalVisible() && gameState().lastCombat; as cmb) {
+      <div class="combat-modal-backdrop" (click)="closeCombatModal()">
+        <div class="combat-modal" (click)="$event.stopPropagation()">
+          <header class="combat-modal-header">
+            <span class="combat-badge">⚔️ RAPPORTO DI BATTAGLIA</span>
+            @if (cmb.roundsFought > 1) {
+              <span class="rounds-tag">⚡ Blitz ({{ cmb.roundsFought }} round)</span>
+            }
+            <button class="btn-close-modal" (click)="closeCombatModal()">&times;</button>
+          </header>
+
+          <!-- Schieramenti a confronto -->
+          <div class="combatants-row">
+            <div
+              class="combatant-box attacker"
+              [style.border-color]="getPlayerColorById(cmb.attackerPlayerId)"
+            >
+              <span class="role-label">ATTACCANTE</span>
+              <h4>{{ graph().territories[cmb.fromId].name }}</h4>
+              <div class="armies-left">
+                Armate: <strong>{{ cmb.attackerRemainingArmies }}</strong>
+                @if (cmb.attackerLosses > 0) {
+                  <span class="loss-pill">-{{ cmb.attackerLosses }}</span>
+                }
+              </div>
+            </div>
+
+            <div class="vs-divider">VS</div>
+
+            <div
+              class="combatant-box defender"
+              [style.border-color]="getPlayerColorById(cmb.defenderPlayerId)"
+            >
+              <span class="role-label">DIFENSORE</span>
+              <h4>{{ graph().territories[cmb.toId].name }}</h4>
+              <div class="armies-left">
+                Armate: <strong>{{ cmb.defenderRemainingArmies }}</strong>
+                @if (cmb.defenderLosses > 0) {
+                  <span class="loss-pill">-{{ cmb.defenderLosses }}</span>
+                }
+              </div>
+            </div>
+          </div>
+
+          <!-- Duelli Dado contro Dado -->
+          <div class="dice-arena">
+            <div class="dice-column">
+              <span class="dice-col-title">Dadi Attacco</span>
+              @for (roll of cmb.attackerRolls; track $index; let i = $index) {
+                <div
+                  class="die-cube die-attacker"
+                  [class.die-win]="i < cmb.diceDuels.length && cmb.diceDuels[i].attackerWon"
+                  [class.die-unused]="i >= cmb.diceDuels.length"
+                >
+                  {{ roll }}
+                </div>
+              }
+            </div>
+
+            <div class="duel-outcomes-column">
+              <span class="dice-col-title">Esito Duelli</span>
+              @for (duel of cmb.diceDuels; track $index) {
+                <div class="duel-outcome-pill" [class.attacker-won]="duel.attackerWon">
+                  @if (duel.attackerWon) {
+                    <span>{{ duel.attackerRoll }} &gt; {{ duel.defenderRoll }} &rarr; Dif -1</span>
+                  } @else {
+                    <span>{{ duel.attackerRoll }} &le; {{ duel.defenderRoll }} &rarr; Att -1</span>
+                  }
+                </div>
+              }
+            </div>
+
+            <div class="dice-column">
+              <span class="dice-col-title">Dadi Difesa</span>
+              @for (roll of cmb.defenderRolls; track $index; let i = $index) {
+                <div
+                  class="die-cube die-defender"
+                  [class.die-win]="i < cmb.diceDuels.length && !cmb.diceDuels[i].attackerWon"
+                  [class.die-unused]="i >= cmb.diceDuels.length"
+                >
+                  {{ roll }}
+                </div>
+              }
+            </div>
+          </div>
+
+          @if (cmb.conquered) {
+            <div class="conquered-banner">🎖️ TERRITORIO CONQUISTATO!</div>
+          }
+
+          <!-- Azioni rapide direttamente dentro il Popup (se è il turno del giocatore) -->
+          @if (gateway.canActNow()) {
+            <footer class="combat-modal-footer">
+              <!-- Se la conquista richiede di scegliere quante armate extra spostare (OCCUPY) -->
+              @if (gameState().phase === 'OCCUPY' && gameState().pendingOccupation; as occ) {
+                <div class="modal-occupy-controls">
+                  <label>
+                    Sposta truppe aggiuntive in
+                    <strong>{{ graph().territories[occ.toId].name }}</strong> (0 ..
+                    {{ occ.maxArmies }}):
+                  </label>
+                  <div class="slider-group">
+                    <input
+                      type="range"
+                      [min]="0"
+                      [max]="occ.maxArmies"
+                      [ngModel]="occupyAmount()"
+                      (ngModelChange)="setOccupyAmount($event)"
+                    />
+                    <input
+                      type="number"
+                      class="num-input"
+                      [min]="0"
+                      [max]="occ.maxArmies"
+                      [ngModel]="occupyAmount()"
+                      (ngModelChange)="setOccupyAmount($event)"
+                    />
+                    <button class="btn-blitz" (click)="confirmOccupation(occupyAmount())">
+                      ✓ Conferma (+{{ occupyAmount() }})
+                    </button>
+                    <button class="btn-action" (click)="confirmOccupation(occ.maxArmies)">
+                      Tutte (+{{ occ.maxArmies }})
+                    </button>
+                  </div>
+                </div>
+              } @else if (
+                gameState().phase === 'ATTACK' && !cmb.conquered && getArmies(cmb.fromId) >= 2
+              ) {
+                <!-- Se lo scontro è ancora aperto, permetti di continuare a tirare dal popup -->
+                <div class="modal-attack-actions">
+                  <button
+                    class="btn-combat"
+                    (click)="continueAttackFromModal(cmb.fromId, cmb.toId, 'SINGLE')"
+                  >
+                    🎲 Rilancia Dadi
+                  </button>
+                  <button
+                    class="btn-blitz"
+                    (click)="continueAttackFromModal(cmb.fromId, cmb.toId, 'BLITZ')"
+                  >
+                    ⚡ Blitz Fino in Fondo
+                  </button>
+                  <button class="btn-secondary" (click)="closeCombatModal()">
+                    Ritirati / Chiudi
+                  </button>
+                </div>
+              } @else {
+                <button class="btn-action" (click)="closeCombatModal()">Continua &rarr;</button>
+              }
+            </footer>
+          }
+        </div>
       </div>
     }
 
@@ -146,67 +324,92 @@
           }})...
         </h3>
         @if (gameState().lastCombat; as cmb) {
-          <div class="combat-log">
-            <span>
-              ⚔️ {{ graph().territories[cmb.fromId].name }} &rarr;
-              {{ graph().territories[cmb.toId].name }}
-            </span>
-            <span
-              >🎲 [{{ cmb.attackerRolls.join(',') }}] vs 🛡️ [{{
-                cmb.defenderRolls.join(',')
-              }}]</span
-            >
-          </div>
+          <button class="btn-action" (click)="dismissedCombatTimestamp.set(null)">
+            🎲 Vedi Ultimo Scontro ({{ graph().territories[cmb.fromId].name }} vs
+            {{ graph().territories[cmb.toId].name }})
+          </button>
         }
       </div>
     } @else {
-      <!-- 1. DEPLOY -->
+      <!-- ================= 1. FASE RINFORZI (DEPLOY) ================= -->
       @if (gameState().phase === 'DEPLOY') {
         <div class="phase-panel">
           <div class="panel-main">
             <h3>
               <span class="dot" [style.background]="activePlayer().color"></span>
-              {{ activePlayer().name }} — Rinforzi da piazzare:
+              {{ activePlayer().name }} — Rinforzi da schierare:
               <span class="highlight-number">{{ activePlayer().reinforcementsAvailable }}</span>
             </h3>
-            @if (gameState().lastReinforcementBreakdown; as brk) {
+            @if (selectedDeployQuota(); as q) {
               <p class="formula-hint">
-                Regola Risk II: <strong>{{ brk.ownedTerritoriesCount }}</strong> territori +
-                <strong>{{ brk.largestConnectedEmpire }}</strong> impero connesso max &rarr; Base
-                <strong>+{{ brk.baseArmies }}</strong>
-                @for (c of brk.continentBonuses; track c.continentId) {
-                  <span class="continent-bonus-pill">{{ c.name }} +{{ c.bonus }}</span>
-                }
+                📍 <strong>{{ sourceNode()!.name }}</strong
+                >: Limite turno <strong>max {{ q.maxPerTurn }}</strong> (1 +
+                {{ q.friendlyNeighborsCount }} confinanti amici) &bull; Già piazzati qui:
+                <strong>{{ q.alreadyDeployed }}</strong> &bull; Ancora schierabili qui:
+                <strong>{{ q.remainingAllowed }}</strong>
+              </p>
+            } @else {
+              <p class="formula-hint">
+                Clicca su un tuo territorio per scegliere quante armate schierare (Max per
+                territorio = 1 + territori amici confinanti).
               </p>
             }
           </div>
+
           <div class="action-buttons">
             @if (availableCardSet(); as cardSet) {
               <button class="btn-blitz" (click)="tradeCards(cardSet)">
-                🃏 Gioca Tris (+{{ nextTradeBonus() }} armate)
+                🃏 Gioca Tris (+{{ nextTradeBonus() }})
               </button>
             }
-            <span class="step-label">Piazza:</span>
-            @for (qty of [1, 5, 10]; track qty) {
-              <button
-                class="btn-action"
-                [class.selected]="deployStep() === qty"
-                (click)="deployStep.set(qty)"
-              >
-                +{{ qty }}
-              </button>
+
+            @if (sourceNode() && selectedDeployQuota(); as q) {
+              @if (q.remainingAllowed > 0) {
+                <div class="slider-group">
+                  <input
+                    type="range"
+                    [min]="1"
+                    [max]="q.remainingAllowed"
+                    [ngModel]="deployAmount()"
+                    (ngModelChange)="setDeployAmount($event)"
+                  />
+                  <input
+                    type="number"
+                    class="num-input"
+                    [min]="1"
+                    [max]="q.remainingAllowed"
+                    [ngModel]="deployAmount()"
+                    (ngModelChange)="setDeployAmount($event)"
+                  />
+                  <button class="btn-combat" (click)="confirmDeploy()">
+                    ➕ Piazza +{{ deployAmount() }}
+                  </button>
+                  @if (q.remainingAllowed > 1) {
+                    <button
+                      class="btn-action"
+                      (click)="setDeployAmount(q.remainingAllowed); confirmDeploy()"
+                    >
+                      Max (+{{ q.remainingAllowed }})
+                    </button>
+                  }
+                </div>
+              } @else {
+                <span class="quota-full-warn">
+                  ⛔ Quota massima ({{ q.maxPerTurn }}) raggiunta su {{ sourceNode()!.name }}
+                </span>
+              }
             }
           </div>
         </div>
       }
 
-      <!-- 2. ATTACK -->
+      <!-- ================= 2. FASE ATTACCO (ATTACK) ================= -->
       @if (gameState().phase === 'ATTACK') {
         <div class="phase-panel">
           <div class="panel-main">
             <h3>
               <span class="dot" [style.background]="activePlayer().color"></span>
-              Fase di Attacco (Difesa a 3 dadi) —
+              Fase di Attacco —
               @if (!sourceNode()) {
                 <span>Seleziona un tuo territorio con almeno 2 armate</span>
               } @else if (!targetNode()) {
@@ -221,23 +424,6 @@
                 </span>
               }
             </h3>
-
-            @if (gameState().lastCombat; as cmb) {
-              <div class="combat-log">
-                <span
-                  >🎲 Attacco: <strong>[{{ cmb.attackerRolls.join(', ') }}]</strong></span
-                >
-                <span
-                  >🛡️ Difesa: <strong>[{{ cmb.defenderRolls.join(', ') }}]</strong></span
-                >
-                <span>
-                  Perdite: Att -{{ cmb.attackerLosses }} / Dif -{{ cmb.defenderLosses }}
-                  @if (cmb.conquered) {
-                    <strong class="conquered-tag">✓ CONQUISTATO!</strong>
-                  }
-                </span>
-              </div>
-            }
           </div>
 
           <div class="action-buttons">
@@ -246,84 +432,127 @@
               <button class="btn-blitz" (click)="executeAttack('BLITZ')">⚡ BLITZ</button>
               <button class="btn-secondary" (click)="clearSelection()">Annulla</button>
             }
+            @if (gameState().lastCombat) {
+              <button class="btn-action" (click)="dismissedCombatTimestamp.set(null)">
+                📊 Ultimo Scontro
+              </button>
+            }
             <button class="btn-next-phase" (click)="endAttackPhase()">Fortifica &rarr;</button>
             <button class="btn-end-turn" (click)="endTurn()">Fine Turno ⏭</button>
           </div>
         </div>
       }
 
-      <!-- 3. OCCUPY -->
+      <!-- ================= 3. FASE OCCUPAZIONE (OCCUPY) ================= -->
       @if (gameState().phase === 'OCCUPY' && gameState().pendingOccupation; as occ) {
         <div class="phase-panel">
           <div class="panel-main">
             <h3>
-              🎖️ Territorio Conquistato! Sposta truppe extra in
+              🎖️ Conquista! Sposta truppe da
+              <strong>{{ graph().territories[occ.fromId].name }}</strong> a
               <strong>{{ graph().territories[occ.toId].name }}</strong>
             </h3>
-            <p class="formula-hint">
-              Puoi spostare fino a <strong>{{ occ.maxArmies }}</strong> armate aggiuntive da
-              {{ graph().territories[occ.fromId].name }}.
-            </p>
           </div>
           <div class="action-buttons">
-            <button class="btn-action" (click)="confirmOccupation(0)">Lascia così (+0)</button>
-            @if (occ.maxArmies >= 1) {
-              <button class="btn-action" (click)="confirmOccupation(1)">+1</button>
-            }
-            @if (occ.maxArmies >= 2) {
-              <button class="btn-action" (click)="confirmOccupation(Math.floor(occ.maxArmies / 2))">
-                Metà (+{{ Math.floor(occ.maxArmies / 2) }})
+            <div class="slider-group">
+              <input
+                type="range"
+                [min]="0"
+                [max]="occ.maxArmies"
+                [ngModel]="occupyAmount()"
+                (ngModelChange)="setOccupyAmount($event)"
+              />
+              <input
+                type="number"
+                class="num-input"
+                [min]="0"
+                [max]="occ.maxArmies"
+                [ngModel]="occupyAmount()"
+                (ngModelChange)="setOccupyAmount($event)"
+              />
+              <button class="btn-blitz" (click)="confirmOccupation(occupyAmount())">
+                ✓ Sposta +{{ occupyAmount() }}
               </button>
-            }
-            <button class="btn-blitz" (click)="confirmOccupation(occ.maxArmies)">
-              Sposta Tutte (+{{ occ.maxArmies }})
-            </button>
+              <button class="btn-action" (click)="confirmOccupation(occ.maxArmies)">
+                Tutte (+{{ occ.maxArmies }})
+              </button>
+            </div>
           </div>
         </div>
       }
 
-      <!-- 4. FORTIFY -->
+      <!-- ================= 4. FASE SPOSTAMENTO TATTICO MULTIPLO (FORTIFY) ================= -->
       @if (gameState().phase === 'FORTIFY') {
         <div class="phase-panel">
           <div class="panel-main">
             <h3>
-              🛡️ Spostamento Strategico —
+              🛡️ Spostamento Tattico —
               @if (!sourceNode()) {
-                <span>Seleziona un tuo territorio da cui spostare armate (o termina il turno)</span>
-              } @else if (!targetNode()) {
                 <span
-                  >Da <strong>{{ sourceNode()!.name }}</strong> &rarr; clicca un tuo territorio
-                  confinante</span
+                  >Seleziona il territorio di origine (da cui potrai distribuire truppe a più vicini
+                  amici)</span
                 >
+              } @else if (!targetNode()) {
+                <span>
+                  Origine: <strong>{{ sourceNode()!.name }}</strong> ({{
+                    getArmies(sourceNode()!.id) - 1
+                  }}
+                  trasferibili)
+                  {{ gameState().fortifySourceId ? '🔒' : '' }}
+                  &rarr; clicca uno o più territori amici confinanti
+                </span>
               } @else {
                 <span>
-                  Sposta da <strong>{{ sourceNode()!.name }}</strong> a
-                  <strong>{{ targetNode()!.name }}</strong>
+                  Da <strong>{{ sourceNode()!.name }}</strong> &rarr;
+                  <strong>{{ targetNode()!.name }}</strong> (Max trasferibili:
+                  {{ maxFortifyTransferable() }})
                 </span>
               }
             </h3>
+            @if (gameState().fortifySourceId; as lockedId) {
+              <p class="formula-hint">
+                Origine fissata su <strong>{{ graph().territories[lockedId].name }}</strong
+                >: puoi inviare truppe anche ad altri stati amici confinanti prima di terminare il
+                turno.
+              </p>
+            }
           </div>
+
           <div class="action-buttons">
-            @if (sourceNode() && targetNode()) {
-              <button class="btn-action" (click)="executeFortify(1)">Sposta 1</button>
-              <button
-                class="btn-action"
-                (click)="
-                  executeFortify(Math.max(1, Math.floor((getArmies(sourceNode()!.id) - 1) / 2)))
-                "
-              >
-                Sposta Metà
-              </button>
-              <button class="btn-combat" (click)="executeFortify(getArmies(sourceNode()!.id) - 1)">
-                Sposta Tutte ({{ getArmies(sourceNode()!.id) - 1 }})
-              </button>
+            @if (sourceNode() && targetNode() && maxFortifyTransferable() >= 1) {
+              <div class="slider-group">
+                <input
+                  type="range"
+                  [min]="1"
+                  [max]="maxFortifyTransferable()"
+                  [ngModel]="fortifyAmount()"
+                  (ngModelChange)="setFortifyAmount($event)"
+                />
+                <input
+                  type="number"
+                  class="num-input"
+                  [min]="1"
+                  [max]="maxFortifyTransferable()"
+                  [ngModel]="fortifyAmount()"
+                  (ngModelChange)="setFortifyAmount($event)"
+                />
+                <button class="btn-combat" (click)="executeFortify(fortifyAmount())">
+                  ➡️ Trasferisci +{{ fortifyAmount() }}
+                </button>
+                <button class="btn-action" (click)="executeFortify(maxFortifyTransferable())">
+                  Tutte (+{{ maxFortifyTransferable() }})
+                </button>
+              </div>
+            }
+            @if (sourceNode() && !gameState().fortifySourceId) {
+              <button class="btn-secondary" (click)="clearSelection()">Cambia Origine</button>
             }
             <button class="btn-end-turn" (click)="endTurn()">Termina Turno ⏭</button>
           </div>
         </div>
       }
 
-      <!-- 5. GAME OVER -->
+      <!-- ================= 5. GAME OVER ================= -->
       @if (gameState().phase === 'GAME_OVER') {
         <div class="phase-panel">
           <h3>🏆 VITTORIA TOTALE! Il mondo è stato conquistato!</h3>
