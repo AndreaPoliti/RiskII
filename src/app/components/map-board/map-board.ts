@@ -110,7 +110,7 @@ export class MapBoardComponent {
   });
 
   onTerritoryClick(clickedId: TerritoryId): void {
-    if (this.gateway.isAiThinking() || this.activePlayer().isAi) return;
+    if (!this.gateway.canActNow()) return;
 
     const state = this.gameState();
     const player = this.activePlayer();

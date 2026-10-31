@@ -1,0 +1,282 @@
+<div class="lobby-backdrop">
+  <div class="lobby-modal">
+    <!-- HEADER -->
+    <header class="lobby-header">
+      <div class="header-left">
+        <span class="brand-badge">RISIK II</span>
+        <h2>Comando Strategico — LobbyLocale & P2P Online</h2>
+      </div>
+      <div class="header-right">
+        <span class="net-pill" [attr.data-mode]="gateway.networkMode()">
+          {{ gateway.connectionStatus() }}
+        </span>
+        <button class="btn-resume" (click)="gateway.resumeCurrentGame()">
+          Torna alla Mappa &times;
+        </button>
+      </div>
+    </header>
+
+    <!-- BARRA MULTIPLAYER P2P (WebRTC) -->
+    <section class="p2p-bar">
+      @if (gateway.networkMode() === 'OFFLINE') {
+        <div class="p2p-controls">
+          <div class="p2p-group">
+            <span class="p2p-label">Il tuo Nome:</span>
+            <input
+              type="text"
+              [(ngModel)]="myPlayerName"
+              class="p2p-input"
+              placeholder="Es. Andrea"
+            />
+            <button type="button" class="btn-host" (click)="gateway.hostOnlineRoom(myPlayerName)">
+              📡 Crea Stanza Online (Host)
+            </button>
+          </div>
+
+          <div class="p2p-divider">oppure</div>
+
+          <div class="p2p-group">
+            <input
+              type="text"
+              [(ngModel)]="joinCodeInput"
+              class="p2p-input code-input"
+              placeholder="Codice (es. RSK-4821)"
+            />
+            <button
+              type="button"
+              class="btn-join"
+              (click)="gateway.joinOnlineRoom(joinCodeInput, myPlayerName)"
+            >
+              🔗 Entra nella Stanza (Guest)
+            </button>
+          </div>
+        </div>
+      } @else {
+        <div class="p2p-active-bar">
+          <div>
+            <strong>Codice Stanza P2P:</strong>
+            <span class="room-code-badge">{{ gateway.roomCode() }}</span>
+            <span class="p2p-hint">
+              Condividi questo codice con i tuoi amici. Il tuo slot assegnato è:
+              <strong>{{ gateway.localPlayerId() ?? 'In attesa...' }}</strong>
+            </span>
+          </div>
+          <button type="button" class="btn-disconnect" (click)="gateway.disconnectNetwork()">
+            Disconnetti P2P (Torna Offline)
+          </button>
+        </div>
+      }
+    </section>
+
+    <div class="lobby-grid">
+      <!-- COLONNA SINISTRA: CONFIGURA PARTITA & SLOT GIOCATORI -->
+      <section class="lobby-card">
+        <h3>
+          ⚔️ Configurazione Partita
+          @if (gateway.networkMode() === 'GUEST') {
+            <span class="guest-lock-tag">(Controllata dall'Host)</span>
+          }
+        </h3>
+
+        <div class="field-group">
+          <label>Variante Mappa:</label>
+          <div class="variant-buttons">
+            <button
+              type="button"
+              class="btn-option"
+              [disabled]="gateway.networkMode() === 'GUEST'"
+              [class.active]="gateway.lobbyMapVariant() === 'RISK_II_48'"
+              (click)="setVariant('RISK_II_48')"
+            >
+              🌍 Risk II Estesa (48 Territori + Rotte Marittime)
+            </button>
+            <button
+              type="button"
+              class="btn-option"
+              [disabled]="gateway.networkMode() === 'GUEST'"
+              [class.active]="gateway.lobbyMapVariant() === 'CLASSIC_42'"
+              (click)="setVariant('CLASSIC_42')"
+            >
+              🗺️ Classica (42 Territori)
+            </button>
+          </div>
+        </div>
+
+        <div class="players-header">
+          <span>Slot Giocatori ({{ gateway.lobbySlots().length }}/6)</span>
+          @if (gateway.networkMode() !== 'GUEST') {
+            <div class="slot-actions">
+              <button
+                type="button"
+                class="btn-sm"
+                [disabled]="gateway.lobbySlots().length >= 6"
+                (click)="addPlayerSlot(false)"
+              >
+                + Umano
+              </button>
+              <button
+                type="button"
+                class="btn-sm"
+                [disabled]="gateway.lobbySlots().length >= 6"
+                (click)="addPlayerSlot(true)"
+              >
+                + Generale IA
+              </button>
+            </div>
+          }
+        </div>
+
+        <div class="slots-list">
+          @for (slot of gateway.lobbySlots(); track slot.id; let i = $index) {
+            <div
+              class="slot-row"
+              [class.is-my-slot]="
+                gateway.localPlayerId() === slot.id && gateway.networkMode() !== 'OFFLINE'
+              "
+              [style.border-left-color]="slot.color"
+            >
+              <input
+                type="color"
+                [(ngModel)]="slot.color"
+                (ngModelChange)="onHostLobbyEdited()"
+                [disabled]="gateway.networkMode() === 'GUEST'"
+                class="color-picker"
+              />
+
+              <input
+                type="text"
+                [(ngModel)]="slot.name"
+                (ngModelChange)="onHostLobbyEdited()"
+                [disabled]="gateway.networkMode() === 'GUEST'"
+                class="name-input"
+              />
+
+              <select
+                class="type-select"
+                [disabled]="gateway.networkMode() === 'GUEST'"
+                [ngModel]="slot.isAi ? slot.aiGeneralId : 'HUMAN'"
+                (ngModelChange)="onSlotTypeChange(slot, $event)"
+              >
+                <option value="HUMAN">👤 Umano</option>
+                @for (gen of generalsList; track gen.id) {
+                  <option [value]="gen.id">🤖 {{ gen.title }}</option>
+                }
+              </select>
+
+              <!-- Stato Connessione Online dello Slot -->
+              @if (gateway.networkMode() !== 'OFFLINE' && !slot.isAi) {
+                <span
+                  class="online-dot"
+                  [class.connected]="slot.isOnlineConnected"
+                  [title]="slot.isOnlineConnected ? 'Connesso via P2P' : 'Slot Umano Libero'"
+                >
+                  {{ slot.isOnlineConnected ? '🟢' : '⚪' }}
+                </span>
+              }
+
+              <!-- Pulsante per i Guest per prendere posto in uno slot -->
+              @if (
+                gateway.networkMode() === 'GUEST' &&
+                gateway.localPlayerId() !== slot.id &&
+                slot.id !== 'p1'
+              ) {
+                <button
+                  type="button"
+                  class="btn-claim"
+                  (click)="gateway.claimLobbySlot(slot.id, myPlayerName)"
+                >
+                  Prendi Posto
+                </button>
+              }
+
+              @if (gateway.networkMode() !== 'GUEST') {
+                <button
+                  type="button"
+                  class="btn-remove"
+                  [disabled]="gateway.lobbySlots().length <= 2"
+                  (click)="removePlayerSlot(i)"
+                >
+                  🗑
+                </button>
+              }
+            </div>
+          }
+        </div>
+
+        @if (gateway.networkMode() !== 'GUEST') {
+          <button type="button" class="btn-start-game" (click)="startConfiguredGame()">
+            🚀 Avvia Nuova Partita {{ gateway.networkMode() === 'HOST' ? 'Online per Tutti' : '' }}
+          </button>
+        } @else {
+          <div class="guest-waiting-box">
+            ⏳ In attesa che l'Host avvii la nuova partita o carichi un salvataggio...
+          </div>
+        }
+      </section>
+
+      <!-- COLONNA DESTRA: SALVATAGGI INDEXEDDB (GESTITI DALL'HOST O IN LOCALE) -->
+      <section class="lobby-card">
+        <h3>💾 Partite Salvate (IndexedDB)</h3>
+
+        @if (gateway.networkMode() !== 'GUEST') {
+          <div class="save-current-box">
+            <input
+              type="text"
+              [(ngModel)]="manualSaveTitle"
+              placeholder="Nome salvataggio (es. Campagna Amici)..."
+              class="save-input"
+            />
+            <button type="button" class="btn-save-manual" (click)="saveCurrent()">
+              Salva Attuale
+            </button>
+          </div>
+
+          <div class="saves-list">
+            @if (gateway.savedGames().length === 0) {
+              <div class="empty-saves">Nessun salvataggio presente su questo dispositivo.</div>
+            }
+
+            @for (save of gateway.savedGames(); track save.id) {
+              <div class="save-item" [class.is-autosave]="save.id === 'autosave'">
+                <div class="save-meta">
+                  <div class="save-title-row">
+                    <strong>{{ save.title }}</strong>
+                    @if (save.id === 'autosave') {
+                      <span class="autosave-tag">AUTO</span>
+                    }
+                  </div>
+                  <span class="save-details">
+                    Turno #{{ save.turnNumber }} &bull;
+                    {{ save.mapVariant === 'RISK_II_48' ? '48 Terr.' : '42 Terr.' }} &bull; Tocca a:
+                    <strong>{{ save.activePlayerName }}</strong>
+                  </span>
+                  <span class="save-date">
+                    {{ save.updatedAt | date: 'dd/MM/yyyy HH:mm:ss' }}
+                  </span>
+                </div>
+
+                <div class="save-buttons">
+                  <button type="button" class="btn-load" (click)="gateway.loadSavedGame(save)">
+                    ▶ Carica {{ gateway.networkMode() === 'HOST' ? 'in Stanza' : '' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-delete"
+                    (click)="gateway.deleteSavedGame(save.id)"
+                  >
+                    🗑
+                  </button>
+                </div>
+              </div>
+            }
+          </div>
+        } @else {
+          <div class="empty-saves">
+            I salvataggi sono gestiti dal database IndexedDB dell'Host.<br /><br />
+            Quando l'Host carica una partita salvata, la tua mappa si sincronizzerà automaticamente!
+          </div>
+        }
+      </section>
+    </div>
+  </div>
+</div>

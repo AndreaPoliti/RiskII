@@ -32,20 +32,7 @@
     </div>
 
     <div class="controls">
-      <button
-        class="btn-sm"
-        [class.active]="gameState().mapVariant === 'RISK_II_48'"
-        (click)="restartGame('RISK_II_48')"
-      >
-        Nuova 48
-      </button>
-      <button
-        class="btn-sm"
-        [class.active]="gameState().mapVariant === 'CLASSIC_42'"
-        (click)="restartGame('CLASSIC_42')"
-      >
-        Nuova 42
-      </button>
+      <button class="btn-sm active" (click)="gateway.openLobby()">☰ Lobby & Salvataggi</button>
     </div>
   </header>
 
@@ -124,10 +111,14 @@
     </svg>
 
     <!-- Barra Carte del Giocatore Umano -->
-    @if (!activePlayer().isAi && activePlayer().cards.length > 0) {
+    @if (!gateway.myViewerPlayer().isAi && gateway.myViewerPlayer().cards.length > 0) {
       <div class="cards-tray">
-        <span class="tray-title">Le tue Carte ({{ activePlayer().cards.length }}):</span>
-        @for (c of activePlayer().cards; track c.id) {
+        <span class="tray-title">
+          Carte di {{ gateway.myViewerPlayer().name }} ({{
+            gateway.myViewerPlayer().cards.length
+          }}):
+        </span>
+        @for (c of gateway.myViewerPlayer().cards; track c.id) {
           <div class="card-mini">
             <span class="card-symbol">{{ getSymbolIcon(c.symbol) }}</span>
             <span class="card-name">
@@ -145,11 +136,14 @@
 
   <!-- HUD INFERIORE -->
   <footer class="hud-bottom">
-    @if (gateway.isAiThinking()) {
+    @if (!gateway.canActNow() && gameState().phase !== 'GAME_OVER') {
       <div class="phase-panel">
         <h3>
-          🤖 <span class="dot" [style.background]="activePlayer().color"></span>
-          <strong>{{ activePlayer().name }}</strong> sta eseguendo le sue manovre tattiche...
+          {{ activePlayer().isAi ? '🤖' : '🌐' }}
+          <span class="dot" [style.background]="activePlayer().color"></span>
+          Turno di <strong>{{ activePlayer().name }}</strong> ({{
+            getPhaseLabel(gameState().phase)
+          }})...
         </h3>
         @if (gameState().lastCombat; as cmb) {
           <div class="combat-log">

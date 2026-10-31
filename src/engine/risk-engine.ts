@@ -113,8 +113,24 @@ export class RiskEngine {
     return this.graph;
   }
 
-  public getPlayerView(_viewerId?: string): PlayerViewState {
+  public getPlayerView(viewerId?: string): PlayerViewState {
     const { rngState: _, deck, discardPile: __, ...view } = structuredClone(this.state);
+
+    // Se è specificato un viewerId (modalità Online P2P), maschera le carte degli avversari
+    if (viewerId) {
+      view.players = view.players.map((p) => {
+        if (p.id === viewerId) return p;
+        return {
+          ...p,
+          cards: p.cards.map((_, idx) => ({
+            id: `hidden_${p.id}_${idx}`,
+            territoryId: null,
+            symbol: 'INFANTRY',
+          })),
+        };
+      });
+    }
+
     return {
       ...view,
       deckCount: deck.length,
