@@ -22,6 +22,17 @@ import { GameStorageService, SavedGameRecord } from '@services/storage/game-stor
 const PEER_PREFIX = 'risik2-p2p-room-';
 const SECRET_STORAGE_KEY = 'risik2_client_secret_id';
 
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+    ],
+  },
+};
+
 export const DEFAULT_PLAYERS: LobbySlotInfo[] = [
   { id: 'p1', name: 'Comandante (Host)', color: '#ef4444', isAi: false },
   {
@@ -126,7 +137,7 @@ export class LocalSessionGateway {
     const fullPeerId = `${PEER_PREFIX}${shortCode}`;
 
     this.connectionStatus.set('Creazione stanza P2P in corso...');
-    const peer = new Peer(fullPeerId);
+    const peer = new Peer(fullPeerId, PEER_CONFIG);
     this.peer = peer;
 
     peer.on('open', () => {
@@ -169,7 +180,7 @@ export class LocalSessionGateway {
     const hostPeerId = `${PEER_PREFIX}${normalizedCode}`;
 
     this.connectionStatus.set(`Connessione a ${normalizedCode}...`);
-    const peer = new Peer();
+    const peer = new Peer(PEER_CONFIG);
     this.peer = peer;
 
     peer.on('open', () => {

@@ -10,6 +10,12 @@
         <span class="net-pill" [attr.data-mode]="gateway.networkMode()">
           {{ gateway.connectionStatus() }}
         </span>
+        @if (pwa.canInstall()) {
+          <button class="btn-host" (click)="pwa.installPwa()">💻 Installa App su PC</button>
+        }
+        <span class="net-pill">
+          {{ pwa.isOnline() ? '🌐 Rete Attiva' : '✈️ Modalità Offline Pronta' }}
+        </span>
         <button class="btn-resume" (click)="gateway.resumeCurrentGame()">
           Torna alla Mappa &times;
         </button>

@@ -8,6 +8,7 @@ import { AiGeneralId, PlayerConfig } from '@engine/models/game.models';
 import { LocalSessionGateway } from '@services/gateway/local-session.gateway';
 import { SavedGameRecord } from '@services/storage/game-storage.service';
 import { LobbySlotInfo } from '@services/network/p2p.models';
+import { PwaInstallerService } from '@services/pwa/pwa-installer.service';
 
 const PALETTE = [
   '#ef4444', // Rosso
@@ -26,6 +27,7 @@ const PALETTE = [
 })
 export class GameLobbyComponent {
   readonly gateway = inject(LocalSessionGateway);
+  readonly pwa = inject(PwaInstallerService);
   readonly generalsList = Object.values(AI_GENERALS);
 
   myPlayerName = 'Comandante';
